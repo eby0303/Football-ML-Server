@@ -1,151 +1,171 @@
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
 import pandas as pd
-import numpy as np
 import joblib
-from typing import List, Dict, Any
+from pydantic import BaseModel
 import logging
-import uvicorn
+import os
+from datetime import datetime
+from fastapi.middleware.cors import CORSMiddleware
+
+
+# Initialize FastAPI app
+app = FastAPI(title="Barcelona Match Predictor")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:8080",      # Your React frontend
+        "http://127.0.0.1:8080"       # Alternative localhost
+    ],
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["*"],
+)
+
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(
-    title="Football Analytics Model API",
-    description="API for predicting football match statistics using CatBoost model",
-    version="1.0.0"
-)
-
-# Load the model
+# Load your existing CatBoost model from .pkl
 try:
-    model = joblib.load("best_cat_boost.pkl")
-    logger.info("Model loaded successfully")
+    model = joblib.load('cat_boost.pkl')  # Your existing .pkl file
+    logger.info("✅ Model loaded successfully from .pkl")
 except Exception as e:
-    logger.error(f"Error loading model: {e}")
-    raise e
+    logger.error(f"❌ Model loading failed: {e}")
+    model = None
 
-# Define target columns (same as in your training)
-TARGET_COLUMNS = [
-    "For_GF", "For_GA", "For_Result", "Expected_xG", "Expected_npxG",
-    "Standard_Gls", "Standard_Sh", "Standard_SoT", "Standard_G/Sh", "Standard_G/SoT",
-    "Performance_PSxG", "Tackles_Tkl", "Tackles_TklW", "Challenges_Tkl", "Challenges_Tkl%",
-    "Unnamed_24_Clr", "Unnamed_23_Tkl+Int", "Unnamed_31_PrgP", "Total_PrgDist", "Total_TotDist",
-    "Carries_PrgDist", "Carries_Carries", "Touches_Touches", "Total_Cmp%", "Short_Cmp%",
-    "Medium_Cmp%", "Long_Cmp%", "Passes_Launch%", "For_Poss"
-]
-
-# Define input schema based on your dataset features
-class FootballMatchInput(BaseModel):
-    Tackles_TklW: float
-    Goal_Kicks_Att: float
-    For_Day: str
-    Pass_Types_Dead: float
-    Tackles_Att_3rd: float
-    Pass_Types_TB: float
-    Passes_Launch: float
-    Medium_Cmp: float
-    Goal_Kicks_AvgLen: float
-    Challenges_Tkl: float
-    Tackles_Def_3rd: float
-    Medium_Att: float
-    Long_Att: float
-    Standard_Dist: float
-    Performance_PKwon: float
-    Unnamed_23_Tkl_Int: float
-    Penalty_Kicks_PKA: float
-    For_Time: str
-    Challenges_Tkl_percent: float
-    Passes_AvgLen: float
-    Performance_Fld: float
-    Take_Ons_Tkld: float
-    Take_Ons_Succ: float
-    Passes_Att_GK: float
-    Carries_CPA: float
-    Performance_OG: float
-    Challenges_Lost: float
-    For_Venue: str
-    For_Date: str
-    For_Round: str
-    last_updated: str
-    Penalty_Kicks_PKatt: float
-    Carries_1_3: float
-    Medium_Cmp_percent: float
-    Expected_G_xG: float
-    Expected_np_G_xG: float
-    Performance_CS: float
-    Performance_Save_percent: float
-    Performance_Saves: float
-    Unnamed_24_Clr: float
-    Unnamed_25_Err: float
-    Unnamed_31_PrgP: float
-    Carries_PrgDist: float
-    Carries_Carries: float
-    Touches_Touches: float
-    Passes_Thr: float
-    Short_Cmp_percent: float
-    Long_Cmp_percent: float
-
-# Response model
 class PredictionResponse(BaseModel):
-    predictions: Dict[str, float]
-    input_features: Dict[str, Any]
+    prediction: list
+    status: str
+    message: str = ""
 
 @app.get("/")
 async def root():
-    return {"message": "Football Analytics Model API", "status": "running"}
+    return {"message": "Barcelona Match Predictor API"}
 
 @app.get("/health")
 async def health_check():
-    return {"status": "healthy", "model_loaded": True}
+    return {"status": "healthy", "model_loaded": model is not None}
 
-@app.post("/predict", response_model=PredictionResponse)
-async def predict(input_data: FootballMatchInput):
+@app.get("/predict/latest", response_model=PredictionResponse)
+async def predict_latest_match():
     """
-    Make predictions using the trained CatBoost model
+    Load data from CSV and return prediction
     """
     try:
-        # Convert input to dictionary and prepare for DataFrame
-        input_dict = input_data.dict()
+        # Load data from CSV
+        csv_data = load_csv_data()
+        if csv_data is None or csv_data.empty:
+            raise HTTPException(status_code=404, detail="CSV data not available")
         
-        # Handle column name differences
-        input_dict["Unnamed_23_Tkl+Int"] = input_dict.pop("Unnamed_23_Tkl_Int")
-        input_dict["Challenges_Tkl%"] = input_dict.pop("Challenges_Tkl_percent")
-        input_dict["Medium_Cmp%"] = input_dict.pop("Medium_Cmp_percent")
-        input_dict["Short_Cmp%"] = input_dict.pop("Short_Cmp_percent")
-        input_dict["Long_Cmp%"] = input_dict.pop("Long_Cmp_percent")
-        input_dict["Carries_1/3"] = input_dict.pop("Carries_1_3")
-        input_dict["Passes_Launch%"] = input_dict.pop("Passes_Launch")
-        
-        # Create DataFrame with proper column order
-        features_df = pd.DataFrame([input_dict])
+        # Prepare features for model
+        model_input = prepare_features(csv_data)
         
         # Make prediction
-        predictions = model.predict(features_df)
+        prediction_result = make_prediction(model_input)
         
-        # Convert predictions to dictionary with target names
-        predictions_dict = {
-            target: float(pred) 
-            for target, pred in zip(TARGET_COLUMNS, predictions[0])
-        }
-        
-        logger.info("Prediction successful")
-        
-        return PredictionResponse(
-            predictions=predictions_dict,
-            input_features=input_data.dict()
-        )
+        return prediction_result
         
     except Exception as e:
         logger.error(f"Prediction error: {e}")
         raise HTTPException(status_code=500, detail=f"Prediction failed: {str(e)}")
 
-# @app.get("/targets")
-# async def get_target_columns():
-#     """
-#     Get the list of target columns the model predicts
-#     """
-#     return {"target_columns": TARGET_COLUMNS}
+def load_csv_data():
+    """Load data from CSV file"""
+    try:
+        if os.path.exists("barca_final_25_26.csv"):
+            df = pd.read_csv("barca_final_25_26.csv")
+            logger.info(f"✅ Loaded CSV data with shape: {df.shape}")
+            return df
+        else:
+            logger.error("❌ CSV file not found")
+            return None
+    except Exception as e:
+        logger.error(f"❌ Failed to load CSV: {e}")
+        return None
+
+def prepare_features(input_df):
+    """
+    Add missing columns that the model expects
+    """
+    # Missing columns with default values
+    missing_columns = {
+        'Performance_CS': 0,           # Clean Sheets (default: 0)
+        'Performance_Save%': 0.0,      # Save Percentage (default: 0.0)
+        'Performance_Saves': 0,        # Saves (default: 0)
+        'Passes_Thr': 0,               # Through Passes (default: 0)
+        'Unnamed_25_Err': 0,           # Error column (default: 0)
+        'last_updated': datetime.now().strftime('%Y-%m-%d %H:%M:%S')  # Current timestamp
+    }
+    
+    # Add missing columns with default values
+    for col, default_value in missing_columns.items():
+        if col not in input_df.columns:
+            input_df[col] = default_value
+            logger.info(f"✅ Added missing column: {col} = {default_value}")
+    
+    logger.info(f"✅ Final feature shape: {input_df.shape}")
+    return input_df
+
+def make_prediction(model_input):
+    """Make prediction using the loaded .pkl model"""
+    if model is None:
+        raise HTTPException(status_code=500, detail="Model not loaded")
+    
+    try:
+        # Your model pipeline should handle all preprocessing
+        predictions = model.predict(model_input)
+        
+        # Convert numpy array to list for JSON serialization
+        prediction_list = predictions[0].tolist() if hasattr(predictions[0], 'tolist') else predictions[0]
+        
+        return PredictionResponse(
+            prediction=prediction_list,
+            status="success",
+            message=f"Predicted {len(prediction_list)} target values from CSV data"
+        )
+        
+    except Exception as e:
+        logger.error(f"❌ Prediction error: {e}")
+        raise HTTPException(status_code=500, detail=f"Prediction failed: {str(e)}")
+
+# Additional endpoint to check model features
+@app.get("/model/features")
+async def get_model_features():
+    """Check what features the model expects"""
+    if model is None:
+        raise HTTPException(status_code=500, detail="Model not loaded")
+    
+    try:
+        # Try to get feature names from the model
+        if hasattr(model, 'feature_names_in_'):
+            features = model.feature_names_in_.tolist()
+        else:
+            features = "Unable to extract feature names"
+        
+        return {
+            "expected_features": features,
+            "expected_count": len(features) if isinstance(features, list) else 0
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+# Additional endpoint for testing with custom data
+@app.post("/predict/custom")
+async def predict_custom(input_data: dict):
+    """
+    Make prediction with custom feature input
+    """
+    try:
+        input_df = pd.DataFrame([input_data])
+        prepared_input = prepare_features(input_df)
+        prediction_result = make_prediction(prepared_input)
+        return prediction_result
+        
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid input: {str(e)}")
 
 if __name__ == "__main__":
+    import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
