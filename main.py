@@ -91,12 +91,7 @@ def prepare_features(input_df):
     """
     # Missing columns with default values
     missing_columns = {
-        'Performance_CS': 0,           # Clean Sheets (default: 0)
-        'Performance_Save%': 0.0,      # Save Percentage (default: 0.0)
-        'Performance_Saves': 0,        # Saves (default: 0)
-        'Passes_Thr': 0,               # Through Passes (default: 0)
-        'Unnamed_25_Err': 0,           # Error column (default: 0)
-        'last_updated': datetime.now().strftime('%Y-%m-%d %H:%M:%S')  # Current timestamp
+        'last_updated': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     }
     
     # Add missing columns with default values
